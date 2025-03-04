@@ -81,7 +81,7 @@ func main() {
 	router.HandleFunc("/mcp/servers", listServersToolsHandler(mcpServers)).Methods("GET")
 	router.HandleFunc("/mcp/{serverName}", describeServerHandler).Methods("GET")
 	router.HandleFunc("/mcp/{serverName}/tools/{toolName}", getToolDetailsHandler).Methods("GET")
-	router.HandleFunc("/mcp/{serverName}/tools/{toolName}/execute", executeToolHandler).Methods("POST")
+	router.HandleFunc("/mcp/{serverName}/tools/{toolName}", executeToolHandler).Methods("POST")
 
 	// Start the server using ngrok for public exposure
 	ctx := context.Background()
@@ -572,7 +572,7 @@ func handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Define path for tool execution
-			swaggerSpec.Paths.Paths["/mcp/"+server.Name+"/tools/"+tool.Name+"/execute"] = spec.PathItem{
+			swaggerSpec.Paths.Paths["/mcp/"+server.Name+"/tools/"+tool.Name] = spec.PathItem{
 				PathItemProps: spec.PathItemProps{
 					Post: &spec.Operation{
 						VendorExtensible: spec.VendorExtensible{
