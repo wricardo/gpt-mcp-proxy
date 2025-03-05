@@ -30,6 +30,8 @@ func main() {
 	if ngrokToken == "" || ngrokDomain == "" {
 		log.Fatal("NGROK_AUTH_TOKEN and NGROK_DOMAIN environment variables must be set")
 	}
+	fmt.Println("Using ngrok domain:", ngrokDomain)
+	fmt.Println("Using ngrok auth token:", ngrokToken)
 
 	// Get config file path from environment or use default
 	configFile := os.Getenv("MCP_CONFIG_FILE")
@@ -67,7 +69,10 @@ func main() {
 		if err != nil {
 			log.Fatalf("Error initializing MCP client for %s: %v", name, err)
 		}
-		_, err = client.Initialize(context.Background(), mcp.InitializeRequest{})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_, err = client.Initialize(ctx, mcp.InitializeRequest{})
 		if err != nil {
 			log.Fatalf("Error initializing MCP client for %s: %v", name, err)
 		}
@@ -233,9 +238,34 @@ func executeToolHandler(w http.ResponseWriter, r *http.Request) {
 	callReq.Params.Name = toolName
 	callReq.Params.Arguments = args
 
-	result, err := client.CallTool(ctx, callReq)
+	log.Printf("Tool name: %s\n", toolName)
+	encoded, err := json.Marshal(args)
 	if err != nil {
-		http.Error(w, "Error calling tool: "+err.Error(), http.StatusInternalServerError)
+		log.Printf("Error encoding args: %v\n", err)
+	}
+	log.Printf("Args: %s\n", string(encoded))
+
+	result, err := client.CallTool(ctx, callReq)
+	// log the the request and result. Pretty.
+	if err != nil {
+		log.Printf("error: %v\n", err)
+	}
+	log.Printf("error: %v\n", err)
+	if result != nil {
+		if result.IsError {
+			log.Println("response is an error.")
+
+		}
+		log.Println("Response:")
+		for _, content := range result.Content {
+			casted := content.(mcp.TextContent)
+			fmt.Println(casted.Text)
+		}
+	}
+
+	if err != nil {
+		errorMsg := fmt.Sprintf("Error executing tool %s: %v", toolName, err)
+		http.Error(w, errorMsg, http.StatusInternalServerError)
 		return
 	}
 
@@ -417,7 +447,7 @@ func handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 							Get: &spec.Operation{
 								VendorExtensible: spec.VendorExtensible{
 									Extensions: spec.Extensions{
-										"x-openai-inconsequential": "true",
+										"x-openai-inconsequential": "false",
 									},
 								},
 								OperationProps: spec.OperationProps{
@@ -477,7 +507,7 @@ func handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 				Get: &spec.Operation{
 					VendorExtensible: spec.VendorExtensible{
 						Extensions: spec.Extensions{
-							"x-openai-inconsequential": "true",
+							"x-openai-inconsequential": "false",
 						},
 					},
 					OperationProps: spec.OperationProps{
@@ -536,7 +566,7 @@ func handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 						Get: &spec.Operation{
 							VendorExtensible: spec.VendorExtensible{
 								Extensions: spec.Extensions{
-									"x-openai-inconsequential": "true",
+									"x-openai-inconsequential": "false",
 								},
 							},
 							OperationProps: spec.OperationProps{
@@ -577,7 +607,7 @@ func handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 					Post: &spec.Operation{
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
-								"x-openai-inconsequential": "true",
+								"x-openai-inconsequential": "false",
 							},
 						},
 						OperationProps: spec.OperationProps{
@@ -785,10 +815,14 @@ func getSchemaProps(name string, param any, depth int) spec.SchemaProps {
 			}
 		}
 	} else if type_ == "array" {
-		res.Items = &spec.SchemaOrArray{
-			Schema: &spec.Schema{
-				SchemaProps: getSchemaProps(name, param, depth+1),
-			},
+		if paramMap, ok := param.(map[string]interface{}); ok {
+			if itemsVal, ok := paramMap["items"]; ok {
+				res.Items = &spec.SchemaOrArray{
+					Schema: &spec.Schema{
+						SchemaProps: getSchemaProps(name+"_items", itemsVal, depth+1),
+					},
+				}
+			}
 		}
 	}
 
