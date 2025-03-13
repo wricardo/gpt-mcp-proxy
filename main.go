@@ -1,4 +1,4 @@
-// Package main provides an HTTP server for MCP (Multi-Tool Coordination Protocol) tools
+// Package main provides an HTTP server for MCP (sulti-Tool Coordination Protocol) tools
 // It exposes REST endpoints that allow listing, describing, and executing MCP tools
 package main
 
@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
@@ -82,11 +83,13 @@ func main() {
 
 	// Set up HTTP routes using Gorilla Mux
 	router := mux.NewRouter()
+	router.HandleFunc("/", handleIndex).Methods("GET")
 	router.HandleFunc("/openapi.json", handleOpenAPISpec).Methods("GET")
-	router.HandleFunc("/mcp/servers", listServersToolsHandler(mcpServers)).Methods("GET")
-	router.HandleFunc("/mcp/{serverName}", describeServerHandler).Methods("GET")
-	router.HandleFunc("/mcp/{serverName}/tools/{toolName}", getToolDetailsHandler).Methods("GET")
-	router.HandleFunc("/mcp/{serverName}/tools/{toolName}", executeToolHandler).Methods("POST")
+	router.HandleFunc("/instructions.txt", handleInstructions).Methods("GET")
+	router.HandleFunc("/servers", listServersToolsHandler(mcpServers)).Methods("GET")
+	router.HandleFunc("/{serverName}", describeServerHandler).Methods("GET")
+	router.HandleFunc("/{serverName}/{toolName}", getToolDetailsHandler).Methods("GET")
+	router.HandleFunc("/{serverName}/{toolName}", executeToolHandler).Methods("POST")
 
 	// Start the server using ngrok for public exposure
 	ctx := context.Background()
@@ -442,7 +445,7 @@ func handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 			Schemes: []string{"https"},
 			Paths: &spec.Paths{
 				Paths: map[string]spec.PathItem{
-					"/mcp/servers": {
+					"/servers": {
 						PathItemProps: spec.PathItemProps{
 							Get: &spec.Operation{
 								VendorExtensible: spec.VendorExtensible{
@@ -487,6 +490,44 @@ func handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 							},
 						},
 					},
+					"/instructions.txt": {
+						PathItemProps: spec.PathItemProps{
+							Get: &spec.Operation{
+								VendorExtensible: spec.VendorExtensible{
+									Extensions: spec.Extensions{
+										"x-openai-inconsequential": "false",
+									},
+								},
+								OperationProps: spec.OperationProps{
+									ID:          "get_instructions",
+									Summary:     "Get instructions",
+									Description: "Returns a plain text description of all servers and their tools, with detailed usage instructions.",
+									Produces:    []string{"text/plain"},
+									Responses: &spec.Responses{
+										ResponsesProps: spec.ResponsesProps{
+											StatusCodeResponses: map[int]spec.Response{
+												200: {
+													ResponseProps: spec.ResponseProps{
+														Description: "Plain text instructions",
+														Schema: &spec.Schema{
+															SchemaProps: spec.SchemaProps{
+																Type: []string{"string"},
+															},
+														},
+													},
+												},
+											},
+											Default: &spec.Response{
+												ResponseProps: spec.ResponseProps{
+													Description: "Error generating instructions",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 			Definitions: map[string]spec.Schema{
@@ -502,7 +543,7 @@ func handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 	// Dynamically add paths per registered MCP server and its tools
 	for _, server := range mcpServers {
 		// Define path for describing the server
-		swaggerSpec.Paths.Paths["/mcp/"+server.Name] = spec.PathItem{
+		swaggerSpec.Paths.Paths["/"+server.Name] = spec.PathItem{
 			PathItemProps: spec.PathItemProps{
 				Get: &spec.Operation{
 					VendorExtensible: spec.VendorExtensible{
@@ -561,7 +602,7 @@ func handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 			// IGNORE THIS TO SAVE THE NUMBER OF ENDPOINTS there is a limit on custom gpt to 30 endpoints
 			if false {
 				// Define path for tool details
-				swaggerSpec.Paths.Paths["/mcp/"+server.Name+"/tools/"+tool.Name] = spec.PathItem{
+				swaggerSpec.Paths.Paths["/"+server.Name+"/"+tool.Name] = spec.PathItem{
 					PathItemProps: spec.PathItemProps{
 						Get: &spec.Operation{
 							VendorExtensible: spec.VendorExtensible{
@@ -602,7 +643,7 @@ func handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Define path for tool execution
-			swaggerSpec.Paths.Paths["/mcp/"+server.Name+"/tools/"+tool.Name] = spec.PathItem{
+			swaggerSpec.Paths.Paths["/"+server.Name+"/"+tool.Name] = spec.PathItem{
 				PathItemProps: spec.PathItemProps{
 					Post: &spec.Operation{
 						VendorExtensible: spec.VendorExtensible{
@@ -827,4 +868,65 @@ func getSchemaProps(name string, param any, depth int) spec.SchemaProps {
 	}
 
 	return res
+}
+
+// handleInstructions generates a plain text description of all servers and their tools
+func handleInstructions(w http.ResponseWriter, r *http.Request) {
+	var sb strings.Builder
+	sb.WriteString("# Instructions\n")
+	sb.WriteString("You are a helpful assistant that help the user accomplish tasks by leveraging tools to help acomplish the task, learn something, answer questions, plan, create any document.\n")
+	sb.WriteString("Use the tools to obtain the information you need or ask the user. Try to approach the task step by step.\n")
+
+	sb.WriteString("# MCP Tools Available\n\n")
+	sb.WriteString("These are the available MCP tools to be called through the api:\n\n")
+
+	// Loop through all registered servers
+	for serverName, serverInfo := range mcpServers {
+		sb.WriteString(fmt.Sprintf("## Server: %s\n", serverName))
+		sb.WriteString(fmt.Sprintf("Command: %s\n", serverInfo.Command))
+
+		// Get the client for this server
+		client, ok := clients[serverName]
+		if !ok {
+			sb.WriteString("Error: Client not available for this server\n\n")
+			continue
+		}
+
+		// List the tools for this server
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		listReq := mcp.ListToolsRequest{}
+		listResp, err := client.ListTools(ctx, listReq)
+		if err != nil {
+			sb.WriteString(fmt.Sprintf("Error listing tools: %v\n\n", err))
+			continue
+		}
+
+		sb.WriteString(fmt.Sprintf("\nAvailable tools (%d):\n\n", len(listResp.Tools)))
+
+		// Loop through all tools for this server
+		for _, tool := range listResp.Tools {
+			sb.WriteString(fmt.Sprintf("### Tool: %s\n", tool.Name))
+			sb.WriteString(fmt.Sprintf("Description: %s\n", tool.Description))
+
+			// Add details about input schema if available
+			if tool.InputSchema.Properties != nil && len(tool.InputSchema.Properties) > 0 {
+				sb.WriteString("\nInput Parameters:\n")
+				for paramName, paramDetails := range tool.InputSchema.Properties {
+					paramType := getTypeParam(paramDetails)
+					sb.WriteString(fmt.Sprintf("- %s (%s)\n", paramName, paramType))
+				}
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n---\n\n")
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte(sb.String()))
+}
+
+func handleIndex(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte(`open /openapi.json to get the openapi spec to configure your custom GPT`))
 }
